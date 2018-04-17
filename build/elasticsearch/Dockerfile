@@ -1,27 +1,4 @@
 ################################################################################
-# This Dockerfile was generated from the template at templates/Dockerfile.j2
-#
-# Beginning of multi stage Dockerfile
-################################################################################
-
-{% set ingest_plugins = 'ingest-user-agent ingest-geoip' %}
-{% set version_tag = elastic_version -%}
-{% set tarball = 'elasticsearch-%s.tar.gz' % elastic_version -%}
-
-{% if artifacts_dir -%}
-{%   set url_root = 'http://localhost:8000/elasticsearch/distribution/archives/tar/build/distributions' -%}
-{%   set x_pack_url_root = 'http://localhost:8000/x-pack-elasticsearch/plugin/build/distributions' -%}
-{%   set plugin_url_root = 'http://localhost:8000/elasticsearch/plugins' -%}
-{% elif staging_build_num -%}
-{%   set version_tag = version_tag + '-' + staging_build_num -%}
-{%   set url_root = 'https://staging.elastic.co/%s/downloads/elasticsearch' % version_tag -%}
-{% elif elastic_version.endswith('-SNAPSHOT') -%}
-{%   set url_root = 'https://snapshots.elastic.co/downloads/elasticsearch' -%}
-{% else -%}
-{%   set url_root = 'https://artifacts.elastic.co/downloads/elasticsearch' -%}
-{% endif -%}
-
-################################################################################
 # Build stage 0 `prep_es_files`:
 # Extract elasticsearch artifact
 # Install required plugins
@@ -29,6 +6,9 @@
 ################################################################################
 
 FROM centos:7 AS prep_es_files
+
+ARG ELASTIC_VERSION=6.2.3
+ARG ELASTIC_TAR_URL=https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-${ELASTIC_VERSION}.tar.gz
 
 ENV PATH /usr/share/elasticsearch/bin:$PATH
 ENV JAVA_HOME /usr/lib/jvm/jre-1.8.0-openjdk
@@ -42,49 +22,23 @@ WORKDIR /usr/share/elasticsearch
 
 USER 1000
 
+RUN echo ${ELASTIC_TAR_URL}
+
 # Download and extract defined ES version.
-RUN curl -fsSL {{ url_root }}/{{ tarball }} | \
+RUN curl -fsSL ${ELASTIC_TAR_URL} | \
     tar zx --strip-components=1
 
 RUN set -ex && for esdirs in config data logs; do \
-        mkdir -p "$esdirs"; \
+    mkdir -p "$esdirs"; \
     done
 
 # Install x-pack and also the ingest-{agent,geoip} modules required for Filebeat
-{% if artifacts_dir -%}
-  {% if image_flavor != 'oss' -%}
-RUN elasticsearch-plugin install --batch "{{ x_pack_url_root }}/x-pack-{{ elastic_version }}.zip"
-  {%- endif %}
-RUN for PLUGIN in {{ ingest_plugins }}; do \
-      elasticsearch-plugin install --batch "{{ plugin_url_root }}/$PLUGIN/build/distributions/$PLUGIN-{{ elastic_version }}.zip"; \
-    done
-{% elif staging_build_num -%}
-  {% if image_flavor != 'oss' -%}
-RUN for PLUGIN in x-pack {{ ingest_plugins }}; do \
-  {% else -%}
-RUN for PLUGIN in {{ ingest_plugins }}; do \
-  {%- endif -%}
-      eval ES_JAVA_OPTS="-Des.plugins.staging={{ staging_build_num }}" elasticsearch-plugin install --batch "$PLUGIN"; \
-    done
-{% else -%}
-  {% if image_flavor != 'oss' -%}
-RUN for PLUGIN in x-pack {{ ingest_plugins }}; do \
-  {% else -%}
-RUN for PLUGIN in {{ ingest_plugins }}; do \
-  {%- endif -%}
-      elasticsearch-plugin install --batch "$PLUGIN"; done
-{%- endif %}
+RUN for PLUGIN in x-pack ingest-user-agent ingest-geoip; do \
+    elasticsearch-plugin install --batch "$PLUGIN"; done
 
 COPY --chown=1000:0 elasticsearch.yml log4j2.properties config/
 
-{% if image_flavor == 'platinum' -%}
-# Enable security logging audit trail
-COPY --chown=1000:0 x-pack/log4j2.properties config/x-pack/
-RUN echo 'xpack.license.self_generated.type: trial' >>config/elasticsearch.yml
-
-{% elif image_flavor == 'basic' -%}
 RUN echo 'xpack.license.self_generated.type: basic' >>config/elasticsearch.yml
-{% endif -%}
 
 USER 0
 
@@ -93,7 +47,7 @@ USER 0
 # and allows ES to run with an uid
 RUN chown -R elasticsearch:0 . && \
     chmod -R g=u /usr/share/elasticsearch
-
+    
 ################################################################################
 # Build stage 1 (the actual elasticsearch image):
 # Copy elasticsearch from stage 0
@@ -112,7 +66,7 @@ ENV JAVA_HOME /usr/lib/jvm/jre-1.8.0-openjdk
 RUN yum update -y && \
     yum install -y nc java-1.8.0-openjdk-headless unzip wget which && \
     yum clean all
-
+    
 RUN groupadd -g 1000 elasticsearch && \
     adduser -u 1000 -g 1000 -G 0 -d /usr/share/elasticsearch elasticsearch && \
     chmod 0775 /usr/share/elasticsearch && \
@@ -123,7 +77,7 @@ WORKDIR /usr/share/elasticsearch
 COPY --from=prep_es_files --chown=1000:0 /usr/share/elasticsearch /usr/share/elasticsearch
 
 COPY --chown=1000:0 bin/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-
+    
 # Openshift overrides USER and uses ones with randomly uid>1024 and gid=0
 # Allow ENTRYPOINT (and ES) to run even with a different user
 RUN chgrp 0 /usr/local/bin/docker-entrypoint.sh && \
